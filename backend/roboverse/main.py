@@ -531,7 +531,7 @@ def control(run_id: str, c: Control):
     elif a == "reset":
         s.reset()
     elif a == "speed":
-        s.set_speed(float(c.value or 1.0))
+        s.set_speed(float(c.value) if c.value is not None else 1.0)  # 0 = as fast as possible
     elif a == "estop":
         s.estop(bool(c.value))
     elif a == "teleop":

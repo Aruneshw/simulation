@@ -85,3 +85,11 @@ def test_cad_and_robot_generation(client):
     assert abs(rep["volume_m3"] - 1e-3) < 1e-9 and rep["mesh"]["indices"]
     robot = client.post("/api/robot/generate", json={"drivetrain": {"drive_type": "four_wheel"}}).json()
     assert len(robot["actuators"]) == 4
+
+
+def test_speed_zero_means_unpaced(client):
+    p = client.post("/api/projects", json={"name": "spd", "template": "obstacle_course"}).json()
+    run = client.post("/api/simulations", json={"project": p}).json()["run_id"]
+    client.post(f"/api/simulations/{run}/control", json={"action": "speed", "value": 0})
+    from roboverse.engines.cosim.session import SESSIONS
+    assert SESSIONS.get(run).speed == 0
