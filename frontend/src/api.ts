@@ -1,5 +1,11 @@
 import type { Project } from './types'
 
+/** Backend origin. Empty = same origin (local dev proxy, or the backend serving the built UI).
+ *  Set VITE_API_URL at build time when the UI is hosted separately (e.g. on Vercel). */
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '')
+
+export const apiUrl = (path: string) => API_BASE + path
+
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
     super(typeof body === 'object' && body && 'detail' in body ? String((body as { detail: unknown }).detail) : `HTTP ${status}`)
@@ -16,7 +22,12 @@ async function req<T>(method: string, url: string, body?: unknown, params?: Reco
     init.body = JSON.stringify(body)
     ;(init.headers as Record<string, string>)['Content-Type'] = 'application/json'
   }
-  const r = await fetch(url + q, init)
+  let r: Response
+  try {
+    r = await fetch(apiUrl(url) + q, init)
+  } catch {
+    throw new ApiError(0, { detail: `Cannot reach the RoboVerse backend at ${API_BASE || location.origin}` })
+  }
   const ct = r.headers.get('content-type') ?? ''
   const data = ct.includes('json') ? await r.json() : await r.text()
   if (!r.ok) throw new ApiError(r.status, data)
@@ -33,7 +44,7 @@ export const api = {
 /** POST a project to an export endpoint and trigger a browser download. */
 export async function download(fmt: string, project: Project, params?: Record<string, string>) {
   const q = params ? '?' + new URLSearchParams(params).toString() : ''
-  const r = await fetch(`/api/export/${fmt}${q}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) })
+  const r = await fetch(apiUrl(`/api/export/${fmt}`) + q, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) })
   if (!r.ok) throw new ApiError(r.status, await r.json().catch(() => ({})))
   const blob = await r.blob()
   const cd = r.headers.get('content-disposition') ?? ''
@@ -52,6 +63,7 @@ export function saveBlob(blob: Blob, name: string) {
 }
 
 export function wsUrl(path: string) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}${path}`
+  const base = new URL(API_BASE || location.origin)
+  const proto = base.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${base.host}${path}`
 }

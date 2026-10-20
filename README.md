@@ -49,6 +49,19 @@ Open the dashboard and choose **Warehouse AMR (complete digital twin)**. Then:
 
 PostgreSQL: set `ROBOVERSE_DATABASE_URL=postgresql+psycopg://user:pass@host/db` (and `pip install psycopg[binary]`). SQLite is the default.
 
+## Deploying
+
+Vercel only hosts the static UI. The Python backend (REST API, WebSocket co-simulation, in-memory
+simulation sessions) needs a host that runs a long-lived server, so deploy it separately:
+
+1. **Backend** — on Render: *New → Blueprint* and pick this repo (uses `render.yaml` + `Dockerfile`).
+   Railway / Fly.io work the same way with the `Dockerfile`. Check `https://<backend>/api/health`.
+   This container also serves the built UI, so it is a complete deployment on its own.
+2. **Frontend on Vercel** — Project → Settings → Environment Variables: add
+   `VITE_API_URL = https://<backend>` (no trailing slash), then redeploy. Root directory: `frontend`.
+
+SQLite on a free container is wiped on redeploy; set `ROBOVERSE_DATABASE_URL` to a PostgreSQL database to keep projects.
+
 ## Tests
 
 ```bash

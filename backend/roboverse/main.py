@@ -60,7 +60,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="RoboVerse Studio API", version=__version__,
               description="Design. Connect. Simulate. Validate. Build.", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["Content-Disposition", "X-RoboVerse-Export-Report"])
 
 
 def get_db():

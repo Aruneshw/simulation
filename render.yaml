@@ -1,0 +1,7 @@
+# Render blueprint: New + > Blueprint > pick this repo.
+services:
+  - type: web
+    name: roboverse-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health

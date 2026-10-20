@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { CircleStop, Download, MapPin, Octagon, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { ApiError, api, wsUrl } from '../api'
+import { ApiError, api, apiUrl, wsUrl } from '../api'
 import { LineChart } from '../components/LineChart'
 import { RobotModel, WorldObjectMesh, ZUP } from '../components/scene'
 import { Field, fmt, IssueList, Num, Panel } from '../components/ui'
@@ -254,7 +254,7 @@ export default function SimulationLab() {
               <tr key={i}><td className="num xs mono">{e.t.toFixed(2)}</td><td><span className={`badge ${e.severity === 'critical' ? 'critical' : e.severity === 'error' ? 'error' : e.severity === 'warning' ? 'warning' : 'info'}`}>{e.kind}</span></td><td className="xs">{e.message}</td></tr>))}</tbody></table>
           </div>
         </Panel>
-        {runId && <a className="btn sm" style={{ marginTop: 8 }} href={`/api/simulations/${runId}/telemetry.csv`}><Download size={13} />Telemetry CSV</a>}
+        {runId && <a className="btn sm" style={{ marginTop: 8 }} href={apiUrl(`/api/simulations/${runId}/telemetry.csv`)}><Download size={13} />Telemetry CSV</a>}
       </aside>
     </div>
   )
