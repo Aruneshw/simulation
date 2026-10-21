@@ -62,6 +62,13 @@ export function saveBlob(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000)
 }
 
+let realtime: Promise<boolean> | null = null
+/** Whether the backend can host live simulation sessions (WebSocket). Serverless deployments can't. */
+export function backendRealtime(): Promise<boolean> {
+  realtime ??= api.get<{ realtime?: boolean }>('/api/health').then((h) => h.realtime !== false, () => true)
+  return realtime
+}
+
 export function wsUrl(path: string) {
   const base = new URL(API_BASE || location.origin)
   const proto = base.protocol === 'https:' ? 'wss' : 'ws'

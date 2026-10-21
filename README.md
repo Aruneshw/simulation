@@ -51,16 +51,24 @@ PostgreSQL: set `ROBOVERSE_DATABASE_URL=postgresql+psycopg://user:pass@host/db` 
 
 ## Deploying
 
-Vercel only hosts the static UI. The Python backend (REST API, WebSocket co-simulation, in-memory
-simulation sessions) needs a host that runs a long-lived server, so deploy it separately:
+### Vercel (everything in one project)
 
-1. **Backend** — on Render: *New → Blueprint* and pick this repo (uses `render.yaml` + `Dockerfile`).
-   Railway / Fly.io work the same way with the `Dockerfile`. Check `https://<backend>/api/health`.
-   This container also serves the built UI, so it is a complete deployment on its own.
-2. **Frontend on Vercel** — Project → Settings → Environment Variables: add
-   `VITE_API_URL = https://<backend>` (no trailing slash), then redeploy. Root directory: `frontend`.
+`vercel.json` builds the UI from `frontend/` and runs the FastAPI backend as a Python function
+(`api/index.py`, deps in the root `requirements.txt`). In the Vercel project settings, the
+**Root Directory must be the repository root** (not `frontend`).
 
-SQLite on a free container is wiped on redeploy; set `ROBOVERSE_DATABASE_URL` to a PostgreSQL database to keep projects.
+Serverless functions cannot keep WebSockets or live sessions, so on Vercel the backend reports
+`realtime: false` in `/api/health` and the Simulation lab switches to **replay mode**: one
+request runs the whole simulation (`POST /api/simulations/batch`), then the UI plays it back
+with pause / resume / stop / speed. Live E-stop and arrow-key teleop need a realtime backend
+(use *Scripted E-stop* instead). Data is stored in SQLite under `/tmp`, which does not persist;
+set `ROBOVERSE_DATABASE_URL` to a PostgreSQL database to keep projects.
+
+### Realtime backend (Render / Railway / Fly.io)
+
+For live sessions, deploy the `Dockerfile` (Render: *New → Blueprint*, uses `render.yaml`).
+The container serves the UI too. To keep the UI on Vercel and use this backend instead, set
+`VITE_API_URL = https://<backend>` in the Vercel project and redeploy.
 
 ## Tests
 

@@ -5,6 +5,8 @@ import asyncio
 import base64
 import io
 import json
+import math
+import os
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any, Optional
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -62,6 +65,11 @@ app = FastAPI(title="RoboVerse Studio API", version=__version__,
               description="Design. Connect. Simulate. Validate. Build.", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition", "X-RoboVerse-Export-Report"])
+app.add_middleware(GZipMiddleware, minimum_size=2048)
+
+# Live sessions need a long-lived process (worker threads + WebSockets). On serverless hosts
+# the UI uses /api/simulations/batch and replays the frames instead.
+REALTIME = os.environ.get("ROBOVERSE_REALTIME", "0" if os.environ.get("VERCEL") else "1") == "1"
 
 
 def get_db():
@@ -93,6 +101,25 @@ def _zip(files: dict[str, str | bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _json_safe(o: Any) -> Any:
+    """Browsers' JSON.parse rejects NaN/Infinity: send non-finite numbers as null."""
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    if isinstance(o, bool) or o is None or isinstance(o, (str, int)):
+        return o
+    try:
+        f = float(o)
+    except (TypeError, ValueError):
+        return o
+    return f if math.isfinite(f) else None
+
+
+def _dumps(o: Any) -> str:
+    return json.dumps(_json_safe(o), default=float)
+
+
 def _download(content: bytes | str, filename: str, media: str = "application/octet-stream") -> Response:
     data = content.encode() if isinstance(content, str) else content
     return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -102,7 +129,7 @@ def _download(content: bytes | str, filename: str, media: str = "application/oct
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "realtime": REALTIME}
 
 
 @app.get("/api/system")
@@ -563,7 +590,7 @@ async def sim_ws(ws: WebSocket, run_id: str):
     try:
         while True:
             msg = await q.get()
-            await ws.send_text(json.dumps(msg, default=float))
+            await ws.send_text(_dumps(msg))
             if msg.get("type") == "finished":
                 break
     except (WebSocketDisconnect, RuntimeError):
@@ -631,6 +658,55 @@ def headless(project: Project, duration: Optional[float] = None):
         raise HTTPException(400, str(e)) from e
     res = c.run(duration)
     return {**res, "telemetry_csv": c.telemetry_csv()}
+
+
+MAX_REPLAY_FRAMES = 600
+
+
+def _compact_frames(frames: list[dict]) -> list[dict]:
+    """Subsample frames for replay, keeping every event and sending the planned path only when it changes."""
+    stride = max(1, math.ceil(len(frames) / MAX_REPLAY_FRAMES))
+    out: list[dict] = []
+    pending_events: list = []
+    last_path: Any = object()
+    for i, f in enumerate(frames):
+        pending_events.extend(f.get("events") or [])
+        if i % stride and i != len(frames) - 1:
+            continue
+        g = {k: v for k, v in f.items() if k not in ("motors", "path", "events")}
+        g["events"] = pending_events
+        pending_events = []
+        if f.get("path") != last_path:
+            g["path"] = last_path = f.get("path")
+        out.append(g)
+    return out
+
+
+@app.post("/api/simulations/batch")
+def batch_simulation(req: SimRequest, db: Session = Depends(get_db)):
+    """Run a whole simulation in one request and return frames for client-side replay
+    (for serverless deployments, where live sessions and WebSockets are unavailable)."""
+    project = req.project
+    validation = validate_project(project, REGISTRY, "pre_simulation")
+    if not validation["summary"]["passed"] and not req.force:
+        return JSONResponse(status_code=409, content={"detail": "validation failed", "validation": validation})
+    frames: list[dict] = []
+    c = Coordinator(project, REGISTRY, on_frame=frames.append)
+    try:
+        init = c.initialize()
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    result = c.run()
+    csv_text = c.telemetry_csv()
+    run_id = new_id()
+    if project.id and db.get(ProjectRow, project.id):
+        db.add(SimRunRow(id=run_id, project_id=project.id, status=result["status"],
+                         config=project.simulation.model_dump(mode="json"), metrics=result["metrics"],
+                         events=result["events"][-2000:], telemetry_csv=csv_text, sim_time=c.t))
+        db.commit()
+    body = {"run_id": run_id, "init": init, "validation": validation, "result": result,
+            "frames": _compact_frames(frames), "telemetry_csv": csv_text}
+    return Response(_dumps(body), media_type="application/json")
 
 
 # --------------------------------------------------------------------- AI --

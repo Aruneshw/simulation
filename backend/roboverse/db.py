@@ -80,7 +80,9 @@ class AssetRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-DATABASE_URL = os.environ.get("ROBOVERSE_DATABASE_URL", "sqlite:///./roboverse.db")
+# Serverless hosts (Vercel) only allow writes under /tmp, which is per-instance and not persistent.
+_DEFAULT_DB = "sqlite:////tmp/roboverse.db" if os.environ.get("VERCEL") else "sqlite:///./roboverse.db"
+DATABASE_URL = os.environ.get("ROBOVERSE_DATABASE_URL", _DEFAULT_DB)
 
 
 def make_engine(url: str = DATABASE_URL):

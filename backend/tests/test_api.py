@@ -79,6 +79,19 @@ def test_live_simulation_over_websocket(client):
     assert csv_text.startswith("t,")
 
 
+def test_batch_simulation_for_serverless_replay(client):
+    p = client.post("/api/projects", json={"name": "batch", "template": "obstacle_course"}).json()
+    r = client.post("/api/simulations/batch", json={"project": p})
+    assert r.status_code == 200
+    assert "Infinity" not in r.text and "NaN" not in r.text  # must be valid for the browser's JSON.parse
+    b = r.json()
+    assert b["result"]["metrics"]["success"] and b["telemetry_csv"].startswith("t,")
+    assert 10 < len(b["frames"]) <= 600 and "path" in b["frames"][0]
+    assert sum(len(f["events"]) for f in b["frames"]) == len(b["result"]["events"])
+    hist = client.get(f"/api/projects/{p['id']}/simulations").json()
+    assert hist[0]["run_id"] == b["run_id"]
+
+
 def test_cad_and_robot_generation(client):
     part = {"id": "p", "name": "p", "features": [{"id": "b", "op": "box", "params": {"x": 0.1, "y": 0.1, "z": 0.1}}]}
     rep = client.post("/api/cad/part", json=part).json()

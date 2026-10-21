@@ -1,0 +1,9 @@
+# Python deps for the Vercel function (api/index.py). Local dev / Docker use backend/requirements.txt.
+# MuJoCo is left out to keep cold starts fast; the app falls back to the built-in planar physics.
+fastapi>=0.115
+pydantic>=2.7
+SQLAlchemy>=2.0
+psutil>=5.9
+python-multipart>=0.0.9
+numpy>=1.26
+manifold3d>=3.0

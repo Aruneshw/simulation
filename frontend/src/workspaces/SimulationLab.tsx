@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { CircleStop, Download, MapPin, Octagon, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { ApiError, api, apiUrl, wsUrl } from '../api'
+import { ApiError, api, apiUrl, backendRealtime, wsUrl } from '../api'
 import { LineChart } from '../components/LineChart'
 import { RobotModel, WorldObjectMesh, ZUP } from '../components/scene'
 import { Field, fmt, IssueList, Num, Panel } from '../components/ui'
@@ -21,6 +21,11 @@ interface InitReport {
 }
 
 const MAX_ROWS = 6000
+
+interface RunResult { status: string; metrics: Record<string, unknown> }
+interface BatchRun { run_id: string; init: InitReport; result: RunResult; frames: Frame[]; telemetry_csv: string }
+/** Client-side playback of a batch run (serverless backends cannot stream live sessions). */
+interface Replay { frames: Frame[]; i: number; simBase: number; wallBase: number; paused: boolean; timer: number; result: RunResult; csvUrl: string }
 
 export default function SimulationLab() {
   const { project, edit, toast } = useStore()
@@ -43,13 +48,69 @@ export default function SimulationLab() {
   const ws = useRef<WebSocket | null>(null)
   const wall0 = useRef(0)
   const raf = useRef(0)
+  const [live, setLive] = useState(true)
+  const replay = useRef<Replay | null>(null)
+  const speedRef = useRef(speed)
+  speedRef.current = speed
+
+  useEffect(() => { backendRealtime().then(setLive) }, [])
 
   const bump = useCallback(() => {
     if (raf.current) return
     raf.current = requestAnimationFrame(() => { raf.current = 0; setTick((t) => t + 1) })
   }, [])
 
-  useEffect(() => () => { ws.current?.close() }, [])
+  const stopReplay = () => {
+    const p = replay.current
+    if (!p) return
+    clearInterval(p.timer)
+    URL.revokeObjectURL(p.csvUrl)
+    replay.current = null
+  }
+  useEffect(() => () => { ws.current?.close(); stopReplay() }, [])
+
+  const feed = (f: Frame) => {
+    last.current = f
+    rows.current.push(f.row)
+    if (rows.current.length > MAX_ROWS) rows.current.splice(0, rows.current.length - MAX_ROWS)
+    trail.current.push([Number(f.row.x), Number(f.row.y)])
+    etrail.current.push([Number(f.row.est_x), Number(f.row.est_y)])
+    if (f.events.length) events.current.push(...f.events)
+    bump()
+  }
+
+  const rebase = (p: Replay) => { p.simBase = p.i ? p.frames[p.i - 1].t : 0; p.wallBase = performance.now() }
+
+  const playReplay = (b: BatchRun) => {
+    stopReplay()
+    // the planned path is only sent when it changes; carry it forward
+    let path: Frame['path'] = null
+    for (const f of b.frames) { if ('path' in f) path = f.path; else f.path = path }
+    const p: Replay = { frames: b.frames, i: 0, simBase: 0, wallBase: performance.now(), paused: false, timer: 0, result: b.result,
+      csvUrl: URL.createObjectURL(new Blob([b.telemetry_csv], { type: 'text/csv' })) }
+    p.timer = window.setInterval(() => {
+      if (p.paused) return
+      const sp = speedRef.current
+      const until = sp > 0 ? p.simBase + ((performance.now() - p.wallBase) / 1000) * sp : Infinity
+      while (p.i < p.frames.length && p.frames[p.i].t <= until) feed(p.frames[p.i++])
+      if (p.i >= p.frames.length) {
+        clearInterval(p.timer)
+        setStatus(p.result.status)
+        setMetrics(p.result.metrics ?? null)
+      }
+    }, 33)
+    replay.current = p
+  }
+
+  const replayControl = (action: string) => {
+    if (action === 'reset') { stopReplay(); setRunId(null); setStatus('idle'); return }
+    const p = replay.current
+    if (!p) return
+    if (action === 'pause') { p.paused = true; setStatus('paused') }
+    else if (action === 'resume') { p.paused = false; rebase(p); setStatus('running') }
+    else if (action === 'speed') rebase(p)
+    else if (action === 'stop') { clearInterval(p.timer); setStatus('stopped') }
+  }
 
   const connect = (id: string) => {
     ws.current?.close()
@@ -57,16 +118,8 @@ export default function SimulationLab() {
     ws.current = s
     s.onmessage = (ev) => {
       const m = JSON.parse(ev.data)
-      if (m.type === 'frame') {
-        const f = m as Frame
-        last.current = f
-        rows.current.push(f.row)
-        if (rows.current.length > MAX_ROWS) rows.current.splice(0, rows.current.length - MAX_ROWS)
-        trail.current.push([Number(f.row.x), Number(f.row.y)])
-        etrail.current.push([Number(f.row.est_x), Number(f.row.est_y)])
-        if (f.events.length) events.current.push(...f.events)
-        bump()
-      } else if (m.type === 'status') {
+      if (m.type === 'frame') feed(m as Frame)
+      else if (m.type === 'status') {
         setStatus(m.status)
         if (m.init) setInit(m.init)
       } else if (m.type === 'hello') {
@@ -81,6 +134,7 @@ export default function SimulationLab() {
   }
 
   const reset = () => {
+    stopReplay()
     rows.current = []; events.current = []; trail.current = []; etrail.current = []; last.current = null
     setMetrics(null); setEstop(false); setTick((t) => t + 1)
   }
@@ -89,6 +143,15 @@ export default function SimulationLab() {
     reset()
     setBlocked(null)
     try {
+      if (!live) {
+        setStatus('computing')
+        const b = await api.post<BatchRun>('/api/simulations/batch', { project, force })
+        setRunId(b.run_id); setInit(b.init)
+        wall0.current = performance.now()
+        setStatus('running')
+        playReplay(b)
+        return
+      }
       const r = await api.post<{ run_id: string; init: InitReport }>('/api/simulations', { project, force })
       setRunId(r.run_id); setInit(r.init)
       connect(r.run_id)
@@ -102,13 +165,14 @@ export default function SimulationLab() {
         const body = e.body as { validation: { issues: Issue[] } }
         setBlocked(body.validation.issues.filter((i) => i.severity === 'critical' || i.severity === 'error'))
       } else toast('error', (e as Error).message)
+      if (!live) setStatus('idle')
     }
   }
-  const control = (action: string, value?: unknown) => runId && api.post(`/api/simulations/${runId}/control`, { action, value }).catch((e) => toast('error', e.message))
+  const control = (action: string, value?: unknown) => !live ? replayControl(action) : runId && api.post(`/api/simulations/${runId}/control`, { action, value }).catch((e) => toast('error', e.message))
 
   // teleop keyboard
   useEffect(() => {
-    if (sim.scenario.mode !== 'teleop' || !runId) return
+    if (sim.scenario.mode !== 'teleop' || !runId || !live) return
     const keys = new Set<string>()
     const send = () => {
       const v = (keys.has('ArrowUp') ? 0.4 : 0) - (keys.has('ArrowDown') ? 0.3 : 0)
@@ -119,13 +183,13 @@ export default function SimulationLab() {
     const u = (e: KeyboardEvent) => { if (e.key.startsWith('Arrow')) { keys.delete(e.key); send() } }
     window.addEventListener('keydown', d); window.addEventListener('keyup', u)
     return () => { window.removeEventListener('keydown', d); window.removeEventListener('keyup', u) }
-  }, [sim.scenario.mode, runId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sim.scenario.mode, runId, live]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = last.current
   const r = f?.row
   const running = status === 'running' || status === 'paused'
   const charts = useMemo(() => {
-    const rs = rows.current
+    const rs = rows.current.slice() // snapshot: frames keep arriving between this memo and render
     const t = rs.map((x) => Number(x.t))
     const col = (k: string) => rs.map((x) => (x[k] == null ? null : Number(x[k])))
     const motors = rs.length ? Object.keys(rs[rs.length - 1]).filter((k) => k.endsWith('_rpm')).map((k) => k.replace('_rpm', '')) : []
@@ -189,23 +253,26 @@ export default function SimulationLab() {
 
       <div className="viewport">
         <div className="overlay toolbar" style={{ top: 10, left: 10 }}>
-          {!running
+          {status === 'computing'
+            ? <button className="btn primary" disabled><Play size={14} />Computing run…</button>
+            : !running
             ? <button className="btn primary" onClick={() => start()}><Play size={14} />Run simulation</button>
             : status === 'paused'
               ? <button className="btn primary" onClick={() => control('resume')}><Play size={14} />Resume</button>
               : <button className="btn" onClick={() => control('pause')}><Pause size={14} />Pause</button>}
           <button className="btn" disabled={!running} onClick={() => control('stop')}><Square size={14} />Stop</button>
-          <button className="btn" disabled={!runId} onClick={() => { reset(); control('reset'); setTimeout(() => runId && connect(runId), 200) }}><RotateCcw size={14} />Reset</button>
+          <button className="btn" disabled={!runId} onClick={() => { reset(); control('reset'); if (live) setTimeout(() => runId && connect(runId), 200) }}><RotateCcw size={14} />Reset</button>
           <select value={speed} onChange={(e) => { const v = parseFloat(e.target.value); setSpeed(v); control('speed', v) }} title="Simulation speed (× real time)">
             {[0.5, 1, 2, 5, 10, 0].map((v) => <option key={v} value={v}>{v === 0 ? 'max speed' : `${v}× real time`}</option>)}</select>
-          <button className={`btn ${estop ? 'danger' : ''}`} disabled={!running} onClick={() => { setEstop(!estop); control('estop', !estop) }}
-            title="Emergency stop (simulated — not a certified safety function)"><Octagon size={14} />{estop ? 'E-STOP ACTIVE' : 'E-stop'}</button>
+          <button className={`btn ${estop ? 'danger' : ''}`} disabled={!running || !live} onClick={() => { setEstop(!estop); control('estop', !estop) }}
+            title={live ? 'Emergency stop (simulated — not a certified safety function)' : 'Live E-stop needs a realtime backend; use "Scripted E-stop" in the scenario'}><Octagon size={14} />{estop ? 'E-STOP ACTIVE' : 'E-stop'}</button>
         </div>
         <div className="overlay toolbar" style={{ top: 10, right: 10 }}>
           <button className={`btn sm ${view === '2d' ? 'active' : ''}`} onClick={() => setView('2d')}>2D map</button>
           <button className={`btn sm ${view === '3d' ? 'active' : ''}`} onClick={() => setView('3d')}>3D</button>
         </div>
-        {sim.scenario.mode === 'teleop' && running && <div className="overlay panel xs" style={{ bottom: 10, left: 10, padding: 6 }}>Teleop: hold arrow keys to drive</div>}
+        {!live && <div className="overlay panel xs" style={{ top: 52, left: 10, padding: 6, maxWidth: 360 }}>Replay mode: this server runs the whole simulation, then plays it back. Live E-stop and teleop need a realtime backend.</div>}
+        {sim.scenario.mode === 'teleop' && running && live && <div className="overlay panel xs" style={{ bottom: 10, left: 10, padding: 6 }}>Teleop: hold arrow keys to drive</div>}
         <div className="overlay legend panel" style={{ bottom: 10, right: 10, padding: '5px 8px' }}>
           <span><span className="swatch" style={{ background: '#22c55e' }} />ground truth</span>
           <span><span className="swatch" style={{ background: '#a78bfa' }} />estimate (odom+IMU+scan match)</span>
@@ -254,7 +321,7 @@ export default function SimulationLab() {
               <tr key={i}><td className="num xs mono">{e.t.toFixed(2)}</td><td><span className={`badge ${e.severity === 'critical' ? 'critical' : e.severity === 'error' ? 'error' : e.severity === 'warning' ? 'warning' : 'info'}`}>{e.kind}</span></td><td className="xs">{e.message}</td></tr>))}</tbody></table>
           </div>
         </Panel>
-        {runId && <a className="btn sm" style={{ marginTop: 8 }} href={apiUrl(`/api/simulations/${runId}/telemetry.csv`)}><Download size={13} />Telemetry CSV</a>}
+        {runId && <a className="btn sm" style={{ marginTop: 8 }} href={replay.current?.csvUrl ?? apiUrl(`/api/simulations/${runId}/telemetry.csv`)} download={`telemetry_${runId}.csv`}><Download size={13} />Telemetry CSV</a>}
       </aside>
     </div>
   )
