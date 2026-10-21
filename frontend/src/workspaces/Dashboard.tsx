@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { fmt, Panel } from '../components/ui'
 import { useStore } from '../store'
+import type { Project } from '../types'
 
 interface ProjectRow { id: string; name: string; type: string; updated_at: string; description: string }
 interface System {
@@ -36,17 +37,17 @@ export default function Dashboard() {
   }, [toast])
 
   const create = async (template?: string) => {
-    const p = await api.post<{ id: string }>('/api/projects', { name: template ? '' : name, type, template, world_template: template ? null : world })
-    await open(p.id)
+    const p = await api.post<Project>('/api/projects', { name: template ? '' : name, type, template, world_template: template ? null : world })
+    await open(p)
     toast('ok', 'Project created')
   }
   const importPkg = async (f: File) => {
     const fd = new FormData()
     fd.append('file', f)
     try {
-      const r = await api.post<{ project_id: string; report: { errors: string[]; warnings: string[] } }>('/api/import/package', fd)
+      const r = await api.post<{ project: Project; report: { errors: string[]; warnings: string[] } }>('/api/import/package', fd)
       if (r.report.errors.length) toast('error', `Imported with ${r.report.errors.length} integrity errors: ${r.report.errors[0]}`)
-      await open(r.project_id)
+      await open(r.project)
     } catch (e) { toast('error', (e as Error).message) }
   }
 

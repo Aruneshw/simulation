@@ -259,7 +259,10 @@ def get_project(pid: str, db: Session = Depends(get_db)):
 
 @app.put("/api/projects/{pid}")
 def save_project(pid: str, project: Project, db: Session = Depends(get_db)):
-    row = _project_row(db, pid)
+    row = db.get(ProjectRow, pid)
+    if row is None:  # upsert: on serverless hosts the project may have been created on another instance
+        row = ProjectRow(id=pid)
+        db.add(row)
     project.id = pid
     row.name, row.type, row.data = project.name, project.type.value, project.model_dump(mode="json")
     db.commit()
@@ -438,7 +441,7 @@ async def import_pkg(file: UploadFile = File(...), db: Session = Depends(get_db)
     for a in assets:
         db.add(AssetRow(project_id=row.id, filename=a["filename"], kind="original", content=a["content"]))
     db.commit()
-    return {"project_id": row.id, "report": report}
+    return {"project_id": row.id, "project": _load(row).model_dump(mode="json"), "report": report}
 
 
 @app.post("/api/import/urdf")

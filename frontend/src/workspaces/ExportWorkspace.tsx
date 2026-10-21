@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { api, download } from '../api'
 import { IssueList, Panel } from '../components/ui'
 import { useStore } from '../store'
-import type { Issue } from '../types'
+import type { Issue, Project } from '../types'
 
 const GROUPS: { title: string; items: [string, string, string][] }[] = [
   { title: 'Project', items: [['package', 'RoboVerse package (.rvproj)', 'Versioned manifest, checksums, project model, all generated artifacts, original assets, recent run results']] },
@@ -34,9 +34,9 @@ export default function ExportWorkspace() {
   const importPkg = async (f: File) => {
     const fd = new FormData(); fd.append('file', f)
     try {
-      const r = await api.post<{ project_id: string; report: { errors: string[]; warnings: string[]; preserved_files: string[] } }>('/api/import/package', fd)
+      const r = await api.post<{ project: Project; report: { errors: string[]; warnings: string[]; preserved_files: string[] } }>('/api/import/package', fd)
       toast(r.report.errors.length ? 'error' : 'ok', `Imported as a new project. ${r.report.errors.length} integrity error(s), ${r.report.preserved_files.length} extra file(s) preserved.`)
-      await open(r.project_id)
+      await open(r.project)
     } catch (e) { toast('error', (e as Error).message) }
   }
 

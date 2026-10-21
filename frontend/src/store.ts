@@ -20,7 +20,8 @@ interface State {
   library: Record<string, Component>
   toasts: Toast[]
   setWorkspace: (w: Workspace) => void
-  open: (id: string) => Promise<void>
+  /** Open by id, or directly from a project the server just returned (avoids a re-fetch). */
+  open: (project: string | Project) => Promise<void>
   close: () => void
   /** Apply an edit. Every edit is undoable and marks the project dirty (autosaved). */
   edit: (fn: (p: Project) => void, opts?: { merge?: boolean }) => void
@@ -51,8 +52,8 @@ export const useStore = create<State>((set, get) => ({
   library: {},
   toasts: [],
   setWorkspace: (workspace) => set({ workspace }),
-  open: async (id) => {
-    const p = await api.get<Project>(`/api/projects/${id}`)
+  open: async (project) => {
+    const p = typeof project === 'string' ? await api.get<Project>(`/api/projects/${project}`) : project
     set({ project: p, past: [], future: [], dirty: false, issues: [], selection: [], workspace: 'world' })
     get().validate()
   },

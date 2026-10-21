@@ -53,9 +53,10 @@ PostgreSQL: set `ROBOVERSE_DATABASE_URL=postgresql+psycopg://user:pass@host/db` 
 
 ### Vercel (everything in one project)
 
-`vercel.json` builds the UI from `frontend/` and runs the FastAPI backend as a Python function
-(`api/index.py`, deps in the root `requirements.txt`). In the Vercel project settings, the
-**Root Directory must be the repository root** (not `frontend`).
+With the Vercel project's **Root Directory set to `frontend`**, `frontend/vercel.json` builds the
+UI and runs the FastAPI backend as a Python function (`frontend/api/index.py`, deps in
+`frontend/requirements.txt`). Functions can only bundle files inside the root directory, so the
+build command copies `backend/roboverse` into `frontend/api/` first.
 
 Serverless functions cannot keep WebSockets or live sessions, so on Vercel the backend reports
 `realtime: false` in `/api/health` and the Simulation lab switches to **replay mode**: one
