@@ -1,11 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build && rm -rf api/roboverse && cp -r ../backend/roboverse api/roboverse",
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "backend/roboverse/**",
+      "includeFiles": "api/roboverse/**",
       "excludeFiles": "{node_modules/**,dist/**,src/**,e2e/**}"
     }
   },
-  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }]
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ]
 }
